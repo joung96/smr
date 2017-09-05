@@ -1,0 +1,5 @@
+Basically to make an X by Y image you need a numerical python array with Y rows and 3*X columns, where each row has
+(r,g,b) triples for the pixels in the corresponding row. Make a bunch of pictures with names map-%05d.png, then run
+ffmpeg -r 30 -i map-%05d.png -s 512x256 -c:v libx264 -qscale 10 -r 30 -pix_fmt yuv420p output.mp4 or something like
+that, substituting your graphic dimensions for 512x256. (note that different encodings place different restrictions on
+those dimensions. At a minimum, they typically like them to be even numbers)

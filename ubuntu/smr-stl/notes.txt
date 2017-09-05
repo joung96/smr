@@ -1,0 +1,136 @@
+### Fri May 29 13:35:41 2015:
+how to test the new fake SMR?
+- prep an image / device
+- read all the write pointers
+- write a bunch of valid locations
+- read the write pointers
+- read back the data and validate it
+- close the program. start up, validate the pointers again.
+plus try killing the program a few times while running. (write new
+data, verify on startup that all blocks up to the write pointer are
+new data)
+
+NOTE - make sure that the write pointers aren't updated until after
+the data is written.
+
+### Sun May 10 01:17:19 2015:
+
+dmtarget by someone else:
+https://github.com/rashid301/ShingleDisk/tree/master/deliverable
+
+shingle friendly XFS:
+https://github.com/fenggangwu/smr-xfs
+
+Seagate EXT4:
+https://github.com/Seagate/SMR_FS-EXT4
+
+HGST:
+https://github.com/hgst/libzbc
+
+finished working(?) version of file-based STL w/ recovery
+roll-forward. wrote simple SMR emulation, need to tie it in properly.
+
+### Wed May  6 23:05:22 2015:
+* after reading in maps on recovery, everything is dirty. that's not
+  right - it's a clean copy of the saved version on disk.
+
+
+### Wed Apr 22 14:38:21 2015:
+
+* cleaning has to be in a separate thread. why? because the logic will
+  suck otherwise if we want to do it incrementally.
+* single mutex for the rb-tree operations, scan under the
+  mutex. (scanning 100M entries takes <100ms) Maybe have a
+  reader/writer lock instead? (possible optimization)
+* cleaning is kicked off from a condvar that the cleaning thread waits
+  on. keep bitmap indicating which bands need free space, all writers
+  wait on a condvar that the cleaner uses to signal space available.
+* main loop waits on select, kicks cleaning thread if timeout. if
+  write needs to block, kicks cleaner immediately and then waits.
+
+### Tue Apr 21 19:51:29 2015:
+https://github.com/aosm/Libc/blob/master/gen/NetBSD/rb.c
+ - apple's redblack tree implementation
+
+http://ayende.com/blog/162945/b-trees-and-why-i-love-them-part-i
+ - pointers to in-memory btree?
+
+http://code.activestate.com/recipes/577569-nbd-server-in-python/
+https://www.mail-archive.com/kragen-hacks@canonical.org/msg00102.html
+ - stuff about nbd (2nd is in python)
+
+http://www.slideshare.net/acunu/20110620-stratifiedbtree
+ - stratified b-trees
+
+https://github.com/safedisk/nbd-osx
+https://github.com/yoe/nbd/blob/master/doc/proto.txt
+
+### Mon Apr 20 19:42:10 2015:
+random note - on my macbook, uncontested pthread lock/unlock is about
+60ms. don't know if it's optimized when no threads. about twice as
+fast on the FX machine.
+
+keep track of last LBA written in each group. if next write in group
+follows this, it's sequential. 
+
+cache write data - allows re-writing sequential data in next size band
+without seeking to read.
+
+** update mkstl to initialize simple lba-to-pba map.
+
+cleaning:
+multi-pool, with length-based placement
+
+50ms transfer time = 5 rotations = 10MB
+
+2mb "pages"?
+what about aggregating into longer lengths?
+note that aggregating small exceptions keeps performance while
+avoiding excessive traffic.
+
+4 (k) small -> 128k
+  = 4 (k) + 2 seeks
+    N + 128k transfer
+
+### Sun Apr 19 23:37:20 2015:
+
+write function - 
+size: S
+b = current[S]
+if no space:
+  allocate b'
+  write done -> b
+  update write pointer (ram)
+write <begin> data <end> -> b
+update write pointer (ram)
+update map (ram)
+
+band, map entries contain dirty bit, base
+
+checkpoint:
+bands - cheap to re-write them all
+seq # mostly gets incremented by writes, so easy to gather last N entries using seq. 20 bytes/record = 200 records/sector. collect last 2000 sectors. same scan grabs base - next higher seq.
+
+every N seconds (1? 5?) write 80K. 
+128M / 80k = 1640
+every 5s will wrap every 2:15
+
+checkpoint on shutdown
+idle disk optimization - don't re-write bands if not changed, don't re-write map if not changed.
+keep last seq so we know if that happened.
+
+calculate base for map.
+then calculate map update - dirty bands and ones with seq<base
+
+entries in RAM don't have a base pointer. that's an attribute of the
+entire map. (whoa - not sure. how do we calculate next base ptr?)
+entries have a pba pointer
+
+entry seq handling:
+- update map entry - new seq is that of data packet,
+  	     	     pba is null
+- checkpoint map entry - new seq is that of ckpt packet
+  	     	     pba is ckpt packet address
+- update band entry - ditto
+thus if <e> is oldest entry, then e.pba is new base.
+

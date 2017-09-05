@@ -1,0 +1,631 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..f7791fd
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++# Object files
++*.o
+diff --git a/Changelog b/Changelog
+index bf4366c..ee7ea57 100644
+--- a/Changelog
++++ b/Changelog
+@@ -1,3 +1,13 @@
++hdparm-9.48:
++	- fix bugs from devslp patch.
++hdparm-9.47:
++	- added devslp patch (IDENTIFY word 76) from David Woodhouse.
++	- help and manpage fixes from Michal Minar.
++hdparm-9.46:
++	- fix compilation with "musl libc".
++	- added "hex:aabbcc.." for binary security passwords.
++	- return EIO when read_big_block() fails
++	- use llabs() rather than abs() in identify.c
+ hdparm-9.45:
+ 	- fixed blocksize handling in fibmap code to use result from FIGETBSZ in more places (Anton Altaparmakov).
+ 	- fixed divide by zero exception in geom.c
+diff --git a/fallocate.c b/fallocate.c
+index 1c7ec81..4e60459 100644
+--- a/fallocate.c
++++ b/fallocate.c
+@@ -27,7 +27,8 @@ int do_fallocate_syscall (const char *path, __u64 bytecount)
+ 	err = EINVAL;
+ #else
+ 	int fd;
+-	loff_t offset = 0, len;
++	unsigned long long offset = 0;	/* loff_t */
++	unsigned long long len;
+ 	int mode = 0;
+ 
+ 	fd = open(path, O_WRONLY|O_CREAT|O_EXCL, 0600);
+diff --git a/hdparm.8 b/hdparm.8
+index 37c7a6b..b79aaef 100644
+--- a/hdparm.8
++++ b/hdparm.8
+@@ -1,4 +1,4 @@
+-.TH HDPARM 8 "September 2014" "Version 9.45"
++.TH HDPARM 8 "June 2015" "Version 9.48"
+ 
+ .SH NAME
+ hdparm \- get/set SATA/IDE device parameters
+@@ -677,6 +677,9 @@ provides a safe fix for the problem for use with earlier kernels.
+ Display some basic settings, similar to \-acdgkmur for IDE.
+ This is also the default behaviour when no options are specified.
+ .TP
++.I -V
++Display program version and exit immediately.
++.TP
+ .I --verbose 
+ Display extra diagnostics from some commands.
+ .TP
+diff --git a/hdparm.c b/hdparm.c
+index c3b791f..ae3019d 100644
+--- a/hdparm.c
++++ b/hdparm.c
+@@ -2,6 +2,8 @@
+  * hdparm.c - Command line interface to get/set hard disk parameters.
+  *          - by Mark Lord (C) 1994-2012 -- freely distributable.
+  */
++#define HDPARM_VERSION "v9.48"
++
+ #define _LARGEFILE64_SOURCE /*for lseek64*/
+ #define _BSD_SOURCE	/* for strtoll() */
+ #include <unistd.h>
+@@ -38,8 +40,6 @@ static int    num_flags_processed = 0;
+ 
+ extern const char *minor_str[];
+ 
+-#define VERSION "v9.45"
+-
+ #ifndef O_DIRECT
+ #define O_DIRECT	040000	/* direct disk access, not easily obtained from headers */
+ #endif
+@@ -134,6 +134,11 @@ static int	get_doreset = 0, set_doreset = 0;
+ static int	i_know_what_i_am_doing = 0;
+ static int	please_destroy_my_drive = 0;
+ 
++static int	report_zones = 0;
++static int	reset_one_write_pointer = 0;
++static int	reset_all_write_pointers = 0;
++static __u64    write_pointer_lba;
++
+ const int timeout_15secs = 15;
+ const int timeout_60secs = 60;
+ const int timeout_5mins  = (5 * 60);
+@@ -229,7 +234,7 @@ static int read_big_block (int fd, char *buf)
+ 		} else {
+ 			fputs ("read() hit EOF - device too small\n", stderr);
+ 		}
+-		return 1;
++		return EIO;
+ 	}
+ 	/* access all sectors of buf to ensure the read fully completed */
+ 	for (i = 0; i < TIMING_BUF_BYTES; i += 512)
+@@ -378,7 +383,7 @@ static int time_device (int fd)
+ 	getitimer(ITIMER_REAL, &e1);
+ 	do {
+ 		++iterations;
+-		if (read_big_block (fd, buf))
++		if ((err = read_big_block(fd, buf)))
+ 			goto quit;
+ 		getitimer(ITIMER_REAL, &e2);
+ 		elapsed = (e1.it_value.tv_sec - e2.it_value.tv_sec)
+@@ -911,6 +916,28 @@ static void get_identify_data (int fd)
+ 	}
+ }
+ 
++int get_id_log_page_data (int fd, __u8 pagenr, __u8 *buf)
++{
++	struct hdio_taskfile *r;
++	int err = 0;
++
++	r = malloc(sizeof(struct hdio_taskfile) + 512);
++	if (!r) {
++		err = errno;
++		perror("malloc()");
++		return err;
++	}
++
++	init_hdio_taskfile(r, ATA_OP_READ_LOG_EXT, RW_READ, LBA48_FORCE, 0x30 + (pagenr << 8), 1, 512);
++	if (do_taskfile_cmd(fd, r, timeout_15secs)) {
++		err = errno;
++	} else {
++		memcpy(buf, r->data, 512);
++	}
++	free(r);
++	return err;
++}
++
+ static void confirm_i_know_what_i_am_doing (const char *opt, const char *explanation)
+ {
+ 	if (!i_know_what_i_am_doing) {
+@@ -1246,6 +1273,84 @@ static int do_erase_sectors (int fd, __u64 lba, const char *devname)
+ }
+ #endif /* FORMAT_AND_ERASE */
+ 
++struct zone_list_header {
++	__u32 n_zones;
++	__u8  same;
++	__u8  pad[3];
++	__u64 max_lba;
++};
++struct zone_list_entry {
++	__u8  zone_type;
++	__u8  reset : 1;
++	__u8  non_seq : 1;
++	__u8  _pad : 2;
++	__u8  condition : 4;
++	__u8  _pad2[6];
++	__u64 length;
++	__u64 start;
++	__u64 write_ptr;
++	__u8  _pad3[32];
++};
++
++static int do_report_zones (int fd, const char *devname, __u64 lba, void *data,
++			  unsigned int data_bytes)
++{
++	struct ata_tf tf;
++	int err = 0;
++	unsigned int data_sects = (data_bytes + 511) / 512;
++
++	abort_if_not_full_device(fd, 0, devname, NULL);
++
++	tf_init(&tf, 0x4A, 0, data_sects);
++	tf.lob.feat = 0x00;
++
++	tf.lob.lbal = lba & 0xFF;
++	tf.lob.lbam = (lba >> 8) & 0xFF;
++	tf.lob.lbah = (lba >> 16) & 0xFF;
++	tf.is_lba48 = 1;
++	tf.hob.lbal = (lba >> 24) & 0xFF;
++	tf.hob.lbam = (lba >> 32) & 0xFF;
++	tf.hob.lbah = (lba >> 40) & 0xFF;
++
++	if (sg16(fd, SG_READ, SG_DMA, &tf, data, data_bytes, 300 /*s*/)) {
++		err = errno;
++		perror("FAILED");
++	} else {
++		//printf("succeeded\n");
++	}
++	return err;
++}
++
++static int do_reset_write_pointer (int fd, const char *devname, __u64 lba,
++                                   int all_bit)
++{
++	struct ata_tf tf;
++	int err = 0;
++
++	abort_if_not_full_device(fd, 0, devname, NULL);
++
++	tf_init(&tf, 0x9F, 0, 0);
++        tf.lob.feat = 4;        /* ATA_SUBCMD_RESET_WP */
++	tf.hob.feat = all_bit;
++	//tf.hob.feat = 0;
++
++	tf.is_lba48 = 1;
++	tf.lob.lbal = lba & 0xFF;
++	tf.lob.lbam = (lba >> 8) & 0xFF;
++	tf.lob.lbah = (lba >> 16) & 0xFF;
++	tf.hob.lbal = (lba >> 24) & 0xFF;
++	tf.hob.lbam = (lba >> 32) & 0xFF;
++	tf.hob.lbah = (lba >> 40) & 0xFF;
++
++	if (sg16(fd, SG_READ, SG_DMA, &tf, 0, 0, 300)) {
++		err = errno;
++		perror("FAILED");
++	} else {
++		printf("reset write pointer succeeded\n");
++	}
++	return err;
++}
++
+ struct sector_range_s {
+ 	__u64	lba;
+ 	__u64	nsectors;
+@@ -1518,7 +1623,7 @@ static void usage_help (int clue, int rc)
+ {
+ 	FILE *desc = rc ? stderr : stdout;
+ 
+-	fprintf(desc,"\n%s - get/set hard disk parameters - version " VERSION ", by Mark Lord.\n\n", progname);
++	fprintf(desc,"\n%s - get/set hard disk parameters - version " HDPARM_VERSION ", by Mark Lord.\n\n", progname);
+ 	if (0) if (rc) fprintf(desc, "clue=%d\n", clue);
+ 	fprintf(desc,"Usage:  %s  [options] [device ...]\n\n", progname);
+ 	fprintf(desc,"Options:\n"
+@@ -1590,6 +1695,7 @@ static void usage_help (int clue, int rc)
+ 	" --offset          use with -t, to begin timings at given offset (in GiB) from start of drive\n"
+ 	" --prefer-ata12    Use 12-byte (instead of 16-byte) SAT commands when possible\n"
+ 	" --read-sector     Read and dump (in hex) a sector directly from the media\n"
++	" --repair-sector   Alias for the --write-sector option (VERY DANGEROUS)\n"
+ 	" --security-help   Display help for ATA security commands\n"
+ 	" --trim-sector-ranges        Tell SSD firmware to discard unneeded data sectors: lba:count ..\n"
+ 	" --trim-sector-ranges-stdin  Same as above, but reads lba:count pairs from stdin\n"
+@@ -2108,7 +2214,7 @@ void process_dev (char *devname)
+ 				printf("over 107");
+ 			else
+ 				printf("%d", args[2]/2-20);
+-			printf("\n drive temperature in range:  %s\n", YN(!(args[1]&0x10)) );
++			printf("\n drive temperature in range:	%s\n", YN(!(args[1]&0x10)) );
+ 		}
+ 	}
+ 	if (do_defaults || get_mult || do_identity) {
+@@ -2150,18 +2256,18 @@ void process_dev (char *devname)
+ 					break;
+ 				default:printf("\?\?\?)\n");
+ 			}
+-               } else if (get_io32bit) {
+-                       err = errno;
+-                       perror(" HDIO_GET_32BIT failed");
++	       } else if (get_io32bit) {
++		       err = errno;
++		       perror(" HDIO_GET_32BIT failed");
+ 		}
+ 	}
+ 	if (do_defaults || get_unmask) {
+ 		if (0 == ioctl(fd, HDIO_GET_UNMASKINTR, &parm)) {
+ 			printf(" unmaskirq     = %2ld", parm);
+ 			on_off(parm);
+-               } else if (get_unmask) {
+-                       err = errno;
+-                       perror(" HDIO_GET_UNMASKINTR failed");
++	       } else if (get_unmask) {
++		       err = errno;
++		       perror(" HDIO_GET_UNMASKINTR failed");
+ 		}
+ 	}
+ 
+@@ -2172,9 +2278,9 @@ void process_dev (char *devname)
+ 				printf(" (DMA-Assisted-PIO)\n");
+ 			else
+ 				on_off(parm);
+-                } else if (get_dma) {
+-                       err = errno;
+-                       perror(" HDIO_GET_DMA failed");
++		} else if (get_dma) {
++		       err = errno;
++		       perror(" HDIO_GET_DMA failed");
+ 		}
+ 	}
+ 	if (get_dma_q) {
+@@ -2188,7 +2294,7 @@ void process_dev (char *devname)
+ 			on_off(parm);
+ 		} else if (get_keep) {
+ 			err = errno;
+-                        perror(" HDIO_GET_KEEPSETTINGS failed");
++			perror(" HDIO_GET_KEEPSETTINGS failed");
+ 		}
+ 	}
+ 	if (get_nowerr) {
+@@ -2196,7 +2302,7 @@ void process_dev (char *devname)
+ 			err = errno;
+ 			perror(" HDIO_GET_NOWERR failed");
+ 		} else {
+-			printf(" nowerr        = %2ld", parm);
++			printf(" nowerr	       = %2ld", parm);
+ 			on_off(parm);
+ 		}
+ 	}
+@@ -2280,7 +2386,7 @@ void process_dev (char *devname)
+ 			if (do_IDentity == 2)
+ 				dump_sectors(id, 1);
+ 			else
+-				identify((void *)id);
++				identify(fd, (void *)id);
+ 		}
+ 	}
+ 	if (get_lookahead) {
+@@ -2355,7 +2461,7 @@ void process_dev (char *devname)
+ 		get_identify_data(fd);
+ 		if (id) {
+ 			visible = get_lba_capacity(id);
+-			native  = do_get_native_max_sectors(fd);
++			native	= do_get_native_max_sectors(fd);
+ 			if (!native) {
+ 				err = errno;
+ 			} else {
+@@ -2438,11 +2544,60 @@ void process_dev (char *devname)
+ 			perror(" HDIO_DRIVE_RESET failed");
+ 		}
+ 	}
++        if (reset_one_write_pointer) {
++		confirm_please_destroy_my_drive("--reset-one-write-pointer", "This will erase an entire band of data on the drive.");
++                do_reset_write_pointer(fd, devname, write_pointer_lba, 0);
++        }
++        if (reset_all_write_pointers) {
++		confirm_please_destroy_my_drive("--reset-write-pointer", "This will erase all data on the drive.");
++                do_reset_write_pointer(fd, devname, 0, 1);
++        }
++	if (report_zones) {
++		unsigned int i, len = 512*512;
++		void *data = malloc(len);
++		struct zone_list_header *hdr = data;
++		struct zone_list_entry *entry = data;
++		const char *same[] = {"all different", "all identical",
++				"last different len", "diff. types, eq. len"};
++		do_report_zones(fd, devname, 0, data, len);
++		printf("zones:	 %u, %s\n", hdr->n_zones, same[(hdr->same & 3)]);
++                printf("zone 0 len: %d\n", (int)entry[1].length);
++		printf("max lba: %llu\n", hdr->max_lba);
++
++		const char *type[] = {"*BAD*", [1] = "CONV",
++				      [2] = "SEQ_REQ", [3] = "SEQ_PREF"};
++		const char *cond[] = {[0] = "NOT_WRITE_PTR", [1] = "EMPTY ",
++				      [2] = "IMPL_OPEN", [3] = "EXPL_OPEN", 
++				      [4] = "CLOSED", "*", "*", "*", "*",
++				      "*", "*", "*", "*", [0xD] = "READ_ONLY",
++				      [0xE] = "FULL  ", [0xF] = "OFFLINE"};
++		__u64 max_lba = hdr->max_lba, lba = 0;
++                unsigned zone_len = entry[1].length;
++		while (lba < max_lba) {
++			do_report_zones(fd, devname, lba, data, len);
++			for (i = 1; i < len/sizeof(*entry) && lba<max_lba; i++) {
++				printf("% 11lld : %s %s%s%s %llu (%d)",
++				       entry[i].start,
++				       type[entry[i].zone_type],
++				       cond[entry[i].condition],
++				       entry[i].non_seq ? " non-seq" : "",
++				       entry[i].reset ? " reset" : "",
++				       entry[i].write_ptr,
++				       (int)(entry[i].write_ptr-entry[i].start));
++                                if (entry[i].length != zone_len)
++                                        printf(" [%d]", (int)entry[i].length);
++                                printf("\n");
++				lba = entry[i].start + entry[i].length;
++			}
++		}
++                free(data);
++	}
+ 	close (fd);
+ 	if (err)
+ 		exit (err);
+ }
+ 
++
+ #define GET_XFERMODE(flag, num)					\
+ 	do {							\
+ 		char *tmpstr = name;				\
+@@ -2506,7 +2661,7 @@ identify_from_stdin (void)
+ 		}
+ 	} while (wc < 256);
+ 	putchar('\n');
+-	identify(sbuf);
++	identify(-1, sbuf);
+ 	return;
+ eof:
+ 	err = errno;
+@@ -2546,24 +2701,45 @@ numeric_parm (char c, const char *name, int *val, int *setparm, int *getparm, in
+ static void get_security_password (int handle_NULL)
+ {
+ 	unsigned int maxlen = sizeof(security_password) - 1;
++	unsigned int binary_passwd = 0;
+ 
+-	if (argc < 2) {
+-		fprintf(stderr, "missing PASSWD\n");
+-		exit(EINVAL);
+-	}
+ 	argp = *argv++, --argc;
+-	if (!argp) {
++	if (!argp || argc < 1) {
+ 		fprintf(stderr, "missing PASSWD\n");
+ 		exit(EINVAL);
+ 	}
+-	if (strlen(argp) > maxlen) {
++	memset(security_password, 0, maxlen + 1);
++	if (0 == strncmp(argp, "hex:", 4)) {
++		argp += 4;
++		if (strlen(argp) != (maxlen * 2)) {
++			fprintf(stderr, "invalid PASSWD length (hex string must be exactly %d chars)\n", maxlen*2);
++			exit(EINVAL);
++		}
++		char *cur = security_password;
++		while (*argp) {
++			int d[2];
++			d[0] = fromhex(*argp++);
++			d[1] = fromhex(*argp++);
++			*(cur++) = d[0] << 4 | d[1];
++		}
++		binary_passwd = 1;
++	} else if (strlen(argp) > maxlen) {
+ 		fprintf(stderr, "PASSWD too long (must be %d chars max)\n", maxlen);
+ 		exit(EINVAL);
+-	}
+-	memset(security_password, 0, maxlen + 1);
+-	if (!handle_NULL || strcmp(argp, "NULL"))
++	} else if (!handle_NULL || strcmp(argp, "NULL")) {
+ 		strcpy(security_password, argp);
+-	printf("security_password=\"%s\"\n", security_password);
++	}
++	printf("security_password:");
++	if (!binary_passwd) {
++		printf(" \"%s\"\n", security_password);
++	} else {
++		unsigned int i;
++		for (i = 0; i < maxlen; ++i) {
++			unsigned char c = security_password[i];
++			printf(" %02x", c);
++		}
++		putchar('\n');
++	}
+ 	while (*argp)
+ 		++argp;
+ }
+@@ -2669,7 +2845,14 @@ handle_standalone_longarg (char *name)
+ 		enhanced_erase = 1;
+ 		security_command = ATA_OP_SECURITY_ERASE_UNIT;
+ 		get_security_password(1);
+-	} else {
++	} else if (0 == strcasecmp(name, "report-zones")) {
++                report_zones = 1;
++	} else if (0 == strcasecmp(name, "reset-one-write-pointer")) {
++                reset_one_write_pointer = 1;
++                get_u64_parm(0, 0, NULL, &write_pointer_lba, 0, lba_limit, "--reset-one-write-pointer", lba_emsg);
++	} else if (0 == strcasecmp(name, "reset-all-write-pointers")) {
++                reset_all_write_pointers = 1;
++        } else {
+ 		usage_help(3,EINVAL);
+ 	}
+ }
+@@ -2926,7 +3109,7 @@ int main (int _argc, char **_argv)
+ 				case      DO_FLAG('T',do_ctimings);
+ 				case GET_SET_PARM('u',"unmask-irq",unmask,0,1);
+ 				case      DO_FLAG('v',do_defaults);
+-				case              'V': fprintf(stdout, "%s %s\n", progname, VERSION); exit(0);
++				case              'V': fprintf(stdout, "%s %s\n", progname, HDPARM_VERSION); exit(0);
+ 				case     SET_FLAG('w',doreset);
+ 				case GET_SET_PARM('W',"write-cache",wcache,0,1);
+ 				case     SET_FLAG('y',standbynow);
+diff --git a/hdparm.h b/hdparm.h
+index 13bda12..55889bc 100644
+--- a/hdparm.h
++++ b/hdparm.h
+@@ -1,7 +1,7 @@
+ /* Some prototypes for extern functions. */
+ 
+ //#undef __KERNEL_STRICT_NAMES
+-#include <linux/types.h>
++#include <sys/types.h>
+ 
+ #if !defined(__GNUC__) && !defined(__attribute__)
+ #define __attribute__(x)
+@@ -9,7 +9,7 @@
+ 
+ #define lba28_limit ((__u64)(1<<28) - 1)
+ 
+-void identify (__u16 *id_supplied);
++void identify (int fd, __u16 *id_supplied);
+ void usage_error(int out) __attribute__((noreturn));
+ void no_scsi (void);
+ void no_xt (void);
+@@ -30,6 +30,8 @@ int  wdidle3_get_timeout (int fd, unsigned char *timeout);
+ void wdidle3_print_timeout (unsigned char timeout);
+ unsigned char wdidle3_msecs_to_timeout (unsigned int msecs);
+ 
++int get_id_log_page_data (int fd, __u8 pagenr, __u8 *buf);
++
+ extern const char *BuffType[4];
+ 
+ struct local_hd_big_geometry {
+diff --git a/hdparm.lsm b/hdparm.lsm
+index e620577..6fccdfe 100644
+--- a/hdparm.lsm
++++ b/hdparm.lsm
+@@ -1,8 +1,11 @@
+ Begin4
+ Title:		hdparm
+-Version:	9.45
+-Entered-date:	2014-09-27
++Version:	9.48
++Entered-date:	2015-06-14
+ Description:	hdparm - get/set hard disk parameters for Linux SATA/IDE drives.
++		v9.48 fix devslp bugs
++		v9.47 devslp reporting support
++		v9.46 added "hex:xxxxxxxx" format for binary security passwords; misc small fixes
+ 		v9.45 fixed fibmap block size; other minor stuff.
+ 		v9.44 better sgio compatibility with kernel; fwdownload mode "E"; longer erase timeout; etc.
+ 		v9.43 rearrange flag execution so that the idle/standby/sleep "now" flags are executed last.
+@@ -119,7 +122,7 @@ Author:		mlord@pobox.com (Mark Lord)
+ Maintained-by:	mlord@pobox.com (Mark Lord)
+ Primary-site:	http://sourceforge.net/projects/hdparm/
+ Alternate-site:	http://www.ibiblio.org/pub/Linux/system/hardware
+-		129K hdparm-9.45.tar.gz
++		130K hdparm-9.48.tar.gz
+ 		4K hdparm.lsm
+ Platforms:	Linux
+ Copying-policy:	BSD License
+diff --git a/identify.c b/identify.c
+index d02220f..dc6cc50 100644
+--- a/identify.c
++++ b/identify.c
+@@ -421,9 +421,9 @@ static const char *feat_3_str[16] = {
+ 	"Disable Data Transfer After Error Detection"	/* word 119 bit  0 (ref: 2014DT)*/
+ };
+ static const char *cap_sata0_str[16] = { 
+-	"unknown 76[15]",				/* word 76 bit 15 */
+-	"unknown 76[14]",				/* word 76 bit 14 */
+-	"unknown 76[13]",				/* word 76 bit 13 */
++	"READ_LOG_DMA_EXT equivalent to READ_LOG_EXT",	/* word 76 bit 15 */
++	"Device automatic Partial to Slumber transitions",/* word 76 bit 14 */
++	"Host automatic Partial to Slumber transitions",/* word 76 bit 13 */
+ 	"NCQ priority information",			/* word 76 bit 12 */
+ 	"Idle-Unload when NCQ is active",		/* word 76 bit 11 */
+ 	"Phy event counters",				/* word 76 bit 10 */
+@@ -446,7 +446,7 @@ static const char *feat_sata0_str[16] = {
+ 	"unknown 78[11]",				/* word 78 bit 11 */
+ 	"unknown 78[10]",				/* word 78 bit 10 */
+ 	"unknown 78[9]",				/* word 78 bit  9 */
+-	"unknown 78[8]",				/* word 78 bit  8 */
++	"Device Sleep (DEVSLP)",			/* word 78 bit  8 */
+ 	"unknown 78[7]",				/* word 78 bit  7 */
+ 	"Software settings preservation",		/* word 78 bit  6 */
+ 	"Asynchronous notification (eg. media change)",	/* word 78 bit  5 */
+@@ -648,8 +648,27 @@ static int is_cfa_dev (__u16 *id)
+ 	return id[0] == 0x848a || id[0] == 0x844a || (id[83] & 0xc004) == 0x4004;
+ }
+ 
++static void print_devslp_info (int fd, __u16 *id)
++{
++	/* Print DEVSLP information */
++	if (id[78] & 0x0100) {
++		__u8 buf[512];
++		int deto = 0;
++		int mdat = 0;
++
++		memset(buf, 0, 512);
++		if (fd != -1 && !get_id_log_page_data(fd, 8, buf) && (buf[0x37] & 0x80)) {
++			mdat = buf[0x30] & 0x1f;
++			deto = buf[0x31];
++			printf("Device Sleep:\n");
++			printf("\tDEVSLP Exit Timeout (DETO): %d ms (%s)\n", deto?deto:20, deto?"drive":"default");
++			printf("\tMinimum DEVSLP Assertion Time (MDAT): %d ms (%s)\n", mdat?mdat:10, deto?"drive":"default");
++		}
++	}
++}
++
+ /* our main() routine: */
+-void identify (__u16 *id_supplied)
++void identify (int fd, __u16 *id_supplied)
+ {
+ 	unsigned int sector_bytes = 512;
+ 	__u16 val[256], ii, jj, kk;
+@@ -907,7 +926,7 @@ void identify (__u16 *id_supplied)
+ 				if(like_std < 3) {
+ 					nn = (__u32)val[CAPACITY_LSB] << 16 | val[CAPACITY_MSB];
+ 					/* check Endian of capacity bytes */
+-					if(abs(mm - bb) > abs(nn - bb))
++					if(llabs((long long)(mm - bb)) > llabs((long long)(nn - bb)))
+ 						mm = nn;
+ 				}
+ 				printf("\tCHS current addressable sectors:%11u\n",mm);
+@@ -1373,6 +1392,7 @@ void identify (__u16 *id_supplied)
+ 			printf(" determined by CSEL");
+ 		printf("\n");
+ 	}
++	print_devslp_info(fd, val);
+ 
+ 	/* more stuff from std 5 */
+ 	if ((like_std > 4) && (eqpt != CDROM)) {
+diff --git a/sgio.h b/sgio.h
+index ad4373f..0dc3782 100644
+--- a/sgio.h
++++ b/sgio.h
+@@ -10,6 +10,7 @@ enum {
+ 	ATA_OP_READ_LONG_ONCE		= 0x23,
+ 	ATA_OP_READ_PIO_EXT		= 0x24,
+ 	ATA_OP_READ_DMA_EXT		= 0x25,
++	ATA_OP_READ_LOG_EXT		= 0x2f,
+ 	ATA_OP_READ_FPDMA		= 0x60,	// NCQ
+ 	ATA_OP_WRITE_PIO		= 0x30,
+ 	ATA_OP_WRITE_LONG		= 0x32,
+diff --git a/sysfs.c b/sysfs.c
+index 36ba2ca..b5eddc6 100644
+--- a/sysfs.c
++++ b/sysfs.c
+@@ -13,6 +13,7 @@
+ #include <fcntl.h>
+ #include <errno.h>
+ #include <dirent.h>
++#include <limits.h>
+ #include <sys/stat.h>
+ #include <linux/types.h>
+ 

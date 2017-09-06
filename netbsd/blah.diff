@@ -1,0 +1,724 @@
+? blah.diff
+? sbin/atactl/old_atactl.c
+? sbin/atactl/smrctl.h
+? sbin/iscsictl/tempfile
+? sbin/iscsictl/tempfile2
+? sbin/iscsictl/tempfile3
+? sys/arch/amd64/compile/GENERIC
+? sys/dev/stl
+? sys/sys/stl.h
+Index: libexec/lfs_cleanerd/lfs_cleanerd.c
+===================================================================
+RCS file: /cvsroot/src/libexec/lfs_cleanerd/lfs_cleanerd.c,v
+retrieving revision 1.55
+diff -r1.55 lfs_cleanerd.c
+261d260
+< 
+771a771,785
+> 	// XXX ROB: Because reset write pointers blows stuff away, never
+> 	// clean a segment with a super block
+> 	daddr_t daddr = lfs_sntod(fs, sn);
+> 	if (daddr < lfs_btofsb(fs, LFS_LABELPAD)) {
+> 	    t->priority = 0;
+> 	    return;
+> 	}
+> 	int i;
+> 	for (i = 0; i < LFS_MAXNUMSB; i++) {
+> 		if (lfs_sb_getsboff(fs, i) == daddr) {
+> 			t->priority = 0;
+> 			return;
+> 		}
+> 	}
+> 
+1083a1098,1101
+> 	// XXX ROB: assume we're never cleaning more than 1000 segments
+> 	//int sns[1000] = {0};
+> 	//int next_sn = 0;
+> 
+1171c1189
+< 			if ((r = load_segment(fs, sn, &bip, &bic)) > 0)
+---
+> 			if ((r = load_segment(fs, sn, &bip, &bic)) > 0) {
+1172a1191,1192
+> 				//sns[next_sn++] = sn;
+> 			}
+1260a1281,1290
+> 	// XXX ROB: clean up sns for smr
+> 	//char buf[10000];
+> 	//for (i = 0; i < next_sn; i++) {
+> 	//    // XXX ROB this doesn't take into account the offset of the partition
+> 	//    // XXX also, this is very hard coded
+> 	//    snprintf(buf, 10000, "/usr/src/sbin/atactl/obj/atactl /dev/rwd0a reset_write_pointer %zu", lfs_segtod(fs, sns[i]) * 4096 / 512);
+> 	//    printf("%s\n", buf);
+> 	//    system(buf);
+> 	//}
+> 
+1284a1315,1316
+> 	printf("In needs_cleaning...\n");
+> 
+1344c1376,1377
+< 	    cip->avail > fsb_per_seg)
+---
+> 	    cip->avail > fsb_per_seg) {
+> 		printf("There are enough segments\n");
+1345a1379
+> 	}
+Index: sbin/atactl/atactl.c
+===================================================================
+RCS file: /cvsroot/src/sbin/atactl/atactl.c,v
+retrieving revision 1.75
+diff -r1.75 atactl.c
+1c1
+< /*	$NetBSD: atactl.c,v 1.75 2015/09/21 06:05:00 mrg Exp $	*/
+---
+> /*	$NetBSD: atactl.c,v 1.74 2014/10/15 06:54:04 mrg Exp $	*/
+38c38
+< __RCSID("$NetBSD: atactl.c,v 1.75 2015/09/21 06:05:00 mrg Exp $");
+---
+> __RCSID("$NetBSD: atactl.c,v 1.74 2014/10/15 06:54:04 mrg Exp $");
+52a53
+> #include <inttypes.h>
+56a58,59
+> #include "smrctl.h"
+> 
+132a136,138
+> static void	device_report_zones(int, char *[]);
+> static void	device_reset_write_pointer(int, char *[]);
+> static void	device_reset_all_write_pointers(int, char *[]);
+150a157,159
+> 	{ "reportzones", "", device_report_zones },
+> 	{ "reset_write_pointer", "lba #", device_reset_write_pointer },
+> 	{ "reset_all_write_pointers", "", device_reset_all_write_pointers },
+318d326
+< 	{ 210,		"Successful RAIN Recovery Count", NULL },
+335,337d342
+< 	{ 246,		"Total Host Sector Writes", NULL },
+< 	{ 247,		"Contact Factory (Micron)", NULL },
+< 	{ 248,		"Contact Factory (Micron)", NULL },
+353a359
+> #ifndef ATACTL_AS_LIB
+416a423
+> #endif
+814a822,939
+> 
+> struct zone_list_header {
+>         uint32_t n_zones;
+>         uint8_t  same;
+>         uint8_t  pad[3];
+>         uint64_t max_lba;
+> };
+> 
+> struct zone_list_entry {
+>         uint8_t  zone_type;
+>         uint8_t  reset : 1;
+>         uint8_t  non_seq : 1;
+>         uint8_t  _pad : 2;
+>         uint8_t  condition : 4;
+>         uint8_t  _pad2[6];
+>         uint64_t length;
+>         uint64_t start;
+>         uint64_t write_ptr;
+>         uint8_t  _pad3[32];
+> };
+> 
+> void
+> do_reset_write_pointer(uint64_t lba, int all_bit)
+> {
+>     struct atareq req;
+>     memset(&req, 0, sizeof(req));
+>     req.flags = ATACMD_WRITE | ATACMD_LBA48;
+>     req.command = 0x9F;
+>     req.timeout = 1000;
+>     req.lba48 = lba;
+>     req.features = 4; /* XXX ATA_SUBCMD_RESET_WP */
+>     req.high_features = all_bit;
+> 
+>     ata_command(&req);
+> }
+> 
+> static void
+> device_reset_write_pointer(int argc, char *argv[])
+> {
+> 	if (argc != 1)
+> 	    usage();
+> 
+> 	uint64_t lba = strtoull(argv[0], NULL, 0);
+> 
+> 	do_reset_write_pointer(lba, 0);
+> }
+> 
+> static void
+> device_reset_all_write_pointers(int argc, char *argv[])
+> {
+> 	do_reset_write_pointer(0, 1);
+> }
+> 
+> void
+> do_report_zones(uint64_t lba, void *data, unsigned int len)
+> {
+>     struct atareq req;
+>     memset(&req, 0, sizeof(req));
+>     req.datalen = len;
+>     req.flags = ATACMD_READ | ATACMD_LBA48;
+>     req.command = 0x4a;
+>     req.databuf = data;
+>     req.timeout = 10000;
+>     req.lba48 = lba;
+>     req.sec_count = (len + 511) / 512;
+> 
+>     ata_command(&req);
+> }
+> 
+> static void
+> device_report_zones(int argc, char *argv[])
+> {
+> 	unsigned int i, len = DEV_BSIZE * 64;
+> 	void *data = calloc(len, 1);
+> 
+> 	struct zone_list_header *hdr = data;
+> 	struct zone_list_entry *entry = data;
+> 
+> 	do_report_zones(0, data, len);
+> 
+> 	const char *same[] = {"all different", "all identical",
+> 			      "last different len", "diff. types, eq. len"};
+> 
+> 	printf("zones:   %u, %s\n", hdr->n_zones, same[(hdr->same & 3)]);
+> 	printf("zone 0 len: %d\n", (int)entry[1].length);
+> 	printf("max lba: %" PRIu64 "\n", hdr->max_lba);
+> 
+> 	const char *type[] = {"*BAD*", [1] = "CONV",
+> 				[2] = "SEQ_REQ", [3] = "SEQ_PREF"};
+> 	const char *cond[] = {[0] = "NOT_WRITE_PTR", [1] = "EMPTY ",
+> 				[2] = "IMPL_OPEN", [3] = "EXPL_OPEN",
+> 				[4] = "CLOSED", "*", "*", "*", "*",
+> 				"*", "*", "*", "*", [0xD] = "READ_ONLY",
+> 				[0xE] = "FULL  ", [0xF] = "OFFLINE"};
+> 
+> 	uint64_t max_lba = hdr->max_lba, lba = 0;
+> 	unsigned zone_len = entry[1].length;
+> 	while (lba < max_lba) {
+> 	    do_report_zones(lba, data, len);
+> 	    for (i = 1; i < len/sizeof(*entry) && lba < max_lba; i++) {
+> 		printf("% 11" PRId64 " : %s %s%s%s %" PRIu64 " (%d)",
+> 			entry[i].start,
+> 			type[entry[i].zone_type],
+> 			cond[entry[i].condition],
+> 			entry[i].non_seq ? " non-seq" : "",
+> 			entry[i].reset ? " reset" : "",
+> 			entry[i].write_ptr,
+> 			(int)(entry[i].write_ptr-entry[i].start));
+> 		if (entry[i].length != zone_len)
+> 			printf(" [%d]", (int)entry[i].length);
+> 		printf("\n");
+> 		lba = entry[i].start + entry[i].length;
+> 	    }
+> 	}
+> 
+> 	free(data);
+> }
+> 
+Index: sbin/fsck_ffs/utilities.c
+===================================================================
+RCS file: /cvsroot/src/sbin/fsck_ffs/utilities.c,v
+retrieving revision 1.64
+diff -r1.64 utilities.c
+339a340
+> 	printf("READING %ld %"PRIu64"\n", size, offset);
+Index: sbin/fsck_lfs/segwrite.c
+===================================================================
+RCS file: /cvsroot/src/sbin/fsck_lfs/segwrite.c,v
+retrieving revision 1.45
+diff -r1.45 segwrite.c
+1054c1054,1055
+< 	assert(daddr > 0);
+---
+> 	// XXX ROB: we got rid of label pad
+> 	// assert(daddr > 0);
+1059a1061,1066
+> 	// XXX ROB... ugh, we need to add 524288 since the partition starts there...
+> 	if (lfs_sb_getsmr(fs)) {
+> 	    char tmp[512];
+> 	    snprintf(tmp, 512, "/usr/src/sbin/atactl/obj/atactl /dev/rwd0a reset_write_pointer %zu", LFS_FSBTODB(fs, daddr) + 524288);
+> 	    system(tmp);
+> 	}
+Index: sbin/newfs_lfs/extern.h
+===================================================================
+RCS file: /cvsroot/src/sbin/newfs_lfs/extern.h,v
+retrieving revision 1.14
+diff -r1.14 extern.h
+41c41
+<     int, int, int, int, int, int, daddr_t, int, int, u_int32_t, int);
+---
+>     int, int, int, int, int, int, daddr_t, int, int, u_int32_t, int, int);
+Index: sbin/newfs_lfs/make_lfs.c
+===================================================================
+RCS file: /cvsroot/src/sbin/newfs_lfs/make_lfs.c,v
+retrieving revision 1.59
+diff -r1.59 make_lfs.c
+392c392
+< 	 u_int32_t roll_id, int bitwidth)
+---
+> 	 u_int32_t roll_id, int bitwidth, int smr)
+425a426,430
+> 	// XXX ROB: hard-code for stl0d
+> 	if (dkw->dkw_size == 0) {
+> 	    dkw->dkw_size = 1024 * 1024 * 123;
+> 	}
+> 
+565a571
+> 	lfs_sb_setsmr(fs, smr);
+729c735,737
+< 	lfs_sb_setnextseg(fs, lfs_sntod(fs, 0));
+---
+> 
+> 	// XXX ROB: changed this to move past the superblock
+> 	lfs_sb_setnextseg(fs, lfs_sntod(fs, 1));
+770c778,779
+< 	lfs_ci_setclean(fs, cip, lfs_sb_getnseg(fs));
+---
+> 	// XXX ROB: take away superblocks from number of clean blocks
+> 	lfs_ci_setclean(fs, cip, lfs_sb_getnseg(fs) - LFS_MAXNUMSB);
+934,938c943,949
+<                                 lfs_sb_subavail(fs, lfs_btofsb(fs, LFS_SBPAD));
+<                         if (i == 0 && lfs_sb_getversion(fs) > 1 &&
+<                             lfs_sb_gets0addr(fs) < lfs_btofsb(fs, LFS_LABELPAD))
+<                                 lfs_sb_subavail(fs, lfs_btofsb(fs, LFS_LABELPAD) -
+<                                     lfs_sb_gets0addr(fs));
+---
+>                             // XXX ROB: don't include any superblock segment in the number of availbable blocks
+>                             lfs_sb_subavail(fs, lfs_btofsb(fs, ssize));
+>                         //        lfs_sb_subavail(fs, lfs_btofsb(fs, LFS_SBPAD));
+>                         //if (i == 0 && lfs_sb_getversion(fs) > 1 &&
+>                         //    lfs_sb_gets0addr(fs) < lfs_btofsb(fs, LFS_LABELPAD))
+>                         //        lfs_sb_subavail(fs, lfs_btofsb(fs, LFS_LABELPAD) -
+>                         //            lfs_sb_gets0addr(fs));
+968c979,980
+< 		if (seg_addr == 0)
+---
+> 		// XXX ROB, add the && i != 0
+> 		if (seg_addr == 0 && i != 0)
+Index: sbin/newfs_lfs/newfs.c
+===================================================================
+RCS file: /cvsroot/src/sbin/newfs_lfs/newfs.c,v
+retrieving revision 1.30
+diff -r1.30 newfs.c
+122c122
+< 	
+---
+> 
+175a176
+> 	int smr = 0;
+188c189
+< 	opstring = "AB:b:DFf:I:i:LM:m:NO:R:r:S:s:v:w:";
+---
+> 	opstring = "AB:b:DFf:I:i:LM:m:NO:R:r:S:s:v:w:z";
+230,231c231,232
+< 			break;  
+< #endif 
+---
+> 			break;
+> #endif
+255a257,259
+> 		case 'z':
+> 			smr = 1;
+> 			break;
+318c322
+< 		(void)strcpy(dkw.dkw_ptype, DKW_PTYPE_LFS); 
+---
+> 		(void)strcpy(dkw.dkw_ptype, DKW_PTYPE_LFS);
+330,334c334,338
+< 		if (dkw.dkw_size == 0)
+< 			fatal("%s: is zero sized", argv[0]);
+< 		if (!force && strcmp(dkw.dkw_ptype, DKW_PTYPE_LFS) != 0)
+< 			fatal("%s: is not `%s', but `%s'", argv[0],
+< 			    DKW_PTYPE_LFS, dkw.dkw_ptype);
+---
+> 		//if (dkw.dkw_size == 0)
+> 		//	fatal("%s: is zero sized", argv[0]);
+> 		//if (!force && strcmp(dkw.dkw_ptype, DKW_PTYPE_LFS) != 0)
+> 		//	fatal("%s: is not `%s', but `%s'", argv[0],
+> 		//	    DKW_PTYPE_LFS, dkw.dkw_ptype);
+341a346
+> 	printf("secsize: %d\n", secsize);
+350c355
+< 		(void)strcpy(dkw.dkw_ptype, DKW_PTYPE_LFS); 
+---
+> 		(void)strcpy(dkw.dkw_ptype, DKW_PTYPE_LFS);
+395c400
+< 	    bitwidth);
+---
+> 	    bitwidth, smr);
+Index: sys/arch/amd64/conf/GENERIC
+===================================================================
+RCS file: /cvsroot/src/sys/arch/amd64/conf/GENERIC,v
+retrieving revision 1.423
+diff -r1.423 GENERIC
+90c90
+< options 	DIAGNOSTIC	# inexpensive kernel consistency checks
+---
+> #options 	DIAGNOSTIC	# inexpensive kernel consistency checks
+103c103
+< options 	DDB_HISTORY_SIZE=512	# enable history editing in DDB
+---
+> #options 	DDB_HISTORY_SIZE=512	# enable history editing in DDB
+106c106
+< makeoptions	DEBUG="-g"	# compile full symbol table for CTF
+---
+> #makeoptions	DEBUG="-g"	# compile full symbol table for CTF
+1217a1218
+> pseudo-device	stl
+Index: sys/conf/files
+===================================================================
+RCS file: /cvsroot/src/sys/conf/files,v
+retrieving revision 1.1152
+diff -r1.1152 files
+1375a1376,1383
+> # XXX ROB do we need to have disk here?
+> defpseudodev stl:	disk
+> file	dev/stl/stl.c	stl	needs-flag
+> file	dev/stl/stl_smr.c	stl
+> file	dev/stl/stl_base.c	stl
+> file	dev/stl/stl_map.c	stl
+> file	dev/stl/stl_realsmr.c	stl
+> 
+Index: sys/conf/majors
+===================================================================
+RCS file: /cvsroot/src/sys/conf/majors,v
+retrieving revision 1.70
+diff -r1.70 majors
+63a64,65
+> 
+> device-major stl       char 261 block 261  stl
+Index: sys/dev/cgd.c
+===================================================================
+RCS file: /cvsroot/src/sys/dev/cgd.c,v
+retrieving revision 1.106
+diff -r1.106 cgd.c
+140c140
+< int cgddebug = 0;
+---
+> int cgddebug = 1;
+616a617
+>     printf("icotl_set\n");
+649a651
+>     printf("einval1\n");
+663a666
+>     printf("einval2\n");
+697a701
+>     printf("einval3\n");
+Index: sys/dev/dkvar.h
+===================================================================
+RCS file: /cvsroot/src/sys/dev/dkvar.h,v
+retrieving revision 1.25
+diff -r1.25 dkvar.h
+31a32,34
+> #ifndef _DKVAR_H
+> #define _DKVAR_H
+> 
+33a37
+> 
+109a114,115
+> 
+> #endif
+Index: sys/dev/ata/wd.c
+===================================================================
+RCS file: /cvsroot/src/sys/dev/ata/wd.c,v
+retrieving revision 1.420
+diff -r1.420 wd.c
+1418c1418,1419
+< 		if (atareq->datalen && atareq->flags &
+---
+> 		extern int wd_start;
+> 		if (!wd_start && atareq->datalen && atareq->flags &
+1450,1453c1451,1463
+< 			wi->wi_bp.b_flags = 0;
+< 			wi->wi_bp.b_data = 0;
+< 			wi->wi_bp.b_bcount = 0;
+< 			wi->wi_bp.b_dev = 0;
+---
+> 			   // XXX ROB HORRIBLY INCREDIBLY HACKISH
+> 			if (wd_start) {
+> 			    wi->wi_bp.b_flags = B_READ;
+> 			    wi->wi_bp.b_data = wi->wi_atareq.databuf;
+> 			    wi->wi_bp.b_bcount = wi->wi_atareq.datalen;
+> 			    wi->wi_bp.b_dev = dev;
+> 			}
+> 			else {
+> 			    wi->wi_bp.b_flags = 0;
+> 			    wi->wi_bp.b_data = 0;
+> 			    wi->wi_bp.b_bcount = 0;
+> 			    wi->wi_bp.b_dev = 0;
+> 			}
+2115a2126,2127
+> 	if ((wi->wi_atareq.flags & ATACMD_LBA48) != 0)
+> 		ata_c.flags |= AT_LBA48;
+2121,2123c2133,2140
+< 	ata_c.r_lba = ((wi->wi_atareq.head & 0x0f) << 24) |
+< 	    (wi->wi_atareq.cylinder << 8) |
+< 	    wi->wi_atareq.sec_num;
+---
+> 
+> 	if (ata_c.flags & AT_LBA48)
+> 	    ata_c.r_lba = wi->wi_atareq.lba48;
+> 	else {
+> 	    ata_c.r_lba = ((wi->wi_atareq.head & 0x0f) << 24) |
+> 		(wi->wi_atareq.cylinder << 8) |
+> 		wi->wi_atareq.sec_num;
+> 	}
+2125a2143
+> 	ata_c.r_features |= wi->wi_atareq.high_features << 8;
+Index: sys/kern/subr_pool.c
+===================================================================
+RCS file: /cvsroot/src/sys/kern/subr_pool.c,v
+retrieving revision 1.206
+diff -r1.206 subr_pool.c
+530c530
+< 		panic("pool_init: pool item size (%zu) too large", prsize);
+---
+> 		panic("pool_init: pool item size (%zu) too large (%u)", prsize, palloc->pa_pagesz);
+Index: sys/kern/vfs_bio.c
+===================================================================
+RCS file: /cvsroot/src/sys/kern/vfs_bio.c,v
+retrieving revision 1.259
+diff -r1.259 vfs_bio.c
+1527a1528
+> 	//printf("biodone: %p\n", bp->b_iodone);
+Index: sys/miscfs/specfs/spec_vnops.c
+===================================================================
+RCS file: /cvsroot/src/sys/miscfs/specfs/spec_vnops.c,v
+retrieving revision 1.160
+diff -r1.160 spec_vnops.c
+783c783
+< 		if (bdev_ioctl(vp->v_rdev, DIOCGPARTINFO, &pi, FREAD, l) == 0)
+---
+> 		if (bdev_ioctl(vp->v_rdev, DIOCGPARTINFO, &pi, FREAD, l) == 0) {
+784a785
+> 		}
+787a789,793
+> 		// XXX ROB gross...
+> 		//if (bp->b_dev == 66819) {
+> 		 //   printf("spec_write: %u %u\n", pi.pi_bsize, BLKDEV_IOSIZE);
+> 		bsize = 4096;
+> 		//}
+800a807,809
+> 			//if (bp->b_dev == 66819) {
+> 			//    printf("spec_write: %u\n", n);
+> 			//}
+Index: sys/sys/ataio.h
+===================================================================
+RCS file: /cvsroot/src/sys/sys/ataio.h,v
+retrieving revision 1.9
+diff -r1.9 ataio.h
+12a13
+> 	u_char	high_features;	/* feature modifier bits for command */
+16a18
+> 	uint64_t lba48;
+29a32
+> #define ATACMD_LBA48		0x00000010
+Index: sys/sys/disklabel.h
+===================================================================
+RCS file: /cvsroot/src/sys/sys/disklabel.h,v
+retrieving revision 1.119
+diff -r1.119 disklabel.h
+313a314
+> x(STL,		23,	"stl")		/* memory disk */ \
+Index: sys/sys/rndsource.h
+===================================================================
+RCS file: /cvsroot/src/sys/sys/rndsource.h,v
+retrieving revision 1.3
+diff -r1.3 rndsource.h
+42a43
+> #include <sys/queue.h>
+Index: sys/ufs/lfs/lfs.h
+===================================================================
+RCS file: /cvsroot/src/sys/ufs/lfs/lfs.h,v
+retrieving revision 1.197
+diff -r1.197 lfs.h
+172c172
+< #define	LFS_LABELPAD	8192		/* LFS label size */
+---
+> #define	LFS_LABELPAD	0		/* LFS label size */ // XXX ROB
+347a348,351
+> // XXX ROB
+> extern size_t maxbpp_g;
+> 
+> 
+866c870,871
+< 	int8_t	  dlfs_pad[128];  /* 380: round to 512 bytes */
+---
+> 	int8_t	  dlfs_smr;	  /* XXX ROB, 380: is this an smr drive */
+> 	int8_t	  dlfs_pad[127];  /* 381: round to 512 bytes */
+939c944,945
+< 	int8_t	  dlfs_pad[44];   /* 464: round to 512 bytes */
+---
+> 	int8_t	  dlfs_smr;	  /* XXX ROB, 464: is this an smr drive */
+> 	int8_t	  dlfs_pad[43];   /* 465: round to 512 bytes */
+Index: sys/ufs/lfs/lfs_accessors.h
+===================================================================
+RCS file: /cvsroot/src/sys/ufs/lfs/lfs_accessors.h,v
+retrieving revision 1.42
+diff -r1.42 lfs_accessors.h
+1228a1229
+> LFS_DEF_SB_ACCESSOR(int8_t, smr);
+Index: sys/ufs/lfs/lfs_pages.c
+===================================================================
+RCS file: /cvsroot/src/sys/ufs/lfs/lfs_pages.c,v
+retrieving revision 1.7
+diff -r1.7 lfs_pages.c
+386c386,387
+< 			if (pg->flags & PG_WANTED)
+---
+> 			if (pg->flags & PG_WANTED) {
+> 				printf("wakeup %p\n", pg);
+387a389
+> 			}
+Index: sys/ufs/lfs/lfs_segment.c
+===================================================================
+RCS file: /cvsroot/src/sys/ufs/lfs/lfs_segment.c,v
+retrieving revision 1.263
+diff -r1.263 lfs_segment.c
+109a110,115
+> 
+> // XXX ROB
+> #include <sys/malloc.h>
+> #include <dev/ata/atareg.h>
+> #include <sys/ataio.h>
+> 
+1974a1981,1993
+> 		// XXX ROB: the below didn't work, so try this
+> 		int i;
+.command = 0x9F;
+> 	    req.timeout = 1000;
+> 	    req.lba48 = lfs_segtod(fs, sn) * 4096 / 512 + 524288; // XXX hard-coded, again + partition offset
+> 	    req.features = 4; /* XXX ATA_SUBCMD_RESET_WP */
+> 	    req.high_features = 0;
+> 	    int wdioctl(dev_t dev, u_long xfer, void *addr, int flag, struct lwp *l);
+> 	    int blah = wdioctl(fs->lfs_dev, ATAIOCCOMMAND, &req, FWRITE, curlwp);
+> 	    (void)blah;
+> 	    //printf("Trying to clean up segment %d (%"PRIu64") returned code %d\n", sn, req.lba48, blah);
+> 	}
+> 	// XXX ROB END
+> 
+2006c2049,2051
+< 	bpp = (struct buf **)pool_get(&fs->lfs_bpppool, PR_WAITOK);
+---
+> 	// XXX ROB
+> 	//bpp = (struct buf **)pool_get(&fs->lfs_bpppool, PR_WAITOK);
+> 	bpp = malloc(maxbpp_g * sizeof(struct buf *), M_SEGMENT, M_WAITOK);
+2390c2435,2449
+< 		VOP_STRATEGY(devvp, cbp);
+---
+> 		if (false && lfs_sb_getsmr(fs)) {
+> 		    int err;
+> 		    void (*cb)(struct buf *) = cbp->b_iodone;
+> 		    cbp->b_iodone = NULL;
+> 		    do {
+> 			VOP_STRATEGY(devvp, cbp);
+> 			err = biowait(cbp);
+> 		    } while (err);
+> 		    if (cb != NULL) {
+> 			cb(cbp);
+> 		    }
+> 		}
+> 		else {
+> 		    VOP_STRATEGY(devvp, cbp);
+> 		}
+2472a2532,2552
+> 
+> 	// XXX ROB why does this have to be in the kernel?
+> 	// we want to reset the write pointer on this guy
+> 	if (lfs_sb_getsmr(fs)) {
+> 	    struct atareq req;
+> 	    memset(&req, 0, sizeof(req));
+> 	    req.flags = ATACMD_WRITE | ATACMD_LBA48;
+> 	    req.command = 0x9F;
+> 	    req.timeout = 1000;
+> 	    req.lba48 = LFS_FSBTODB(fs, daddr) + 524288; // XXX hard-coded... need the 524288 since partition offset
+> 	    req.features = 4; /* XXX ATA_SUBCMD_RESET_WP */
+> 	    req.high_features = 0;
+> 	    int wdioctl(dev_t dev, u_long xfer, void *addr, int flag, struct lwp *l);
+> 	    int err = 0;
+> 	    do {
+> 		err = wdioctl(fs->lfs_dev, ATAIOCCOMMAND, &req, FWRITE, curlwp);
+> 	    } while (err);
+> 	    // printf("Trying to clean up segment %"PRIu64" for super block returned code %d\n", req.lba48, blah);
+> 	}
+> 	// XXX ROB END
+> 
+2697c2777,2779
+< 	pool_put(&fs->lfs_bpppool, cl->bpp);
+---
+> 	// XXX ROB
+> 	free(cl->bpp, M_SEGMENT);
+> 	//pool_put(&fs->lfs_bpppool, cl->bpp);
+Index: sys/ufs/lfs/lfs_subr.c
+===================================================================
+RCS file: /cvsroot/src/sys/ufs/lfs/lfs_subr.c,v
+retrieving revision 1.86
+diff -r1.86 lfs_subr.c
+102a103,104
+> size_t maxbpp_g;
+> 
+151,152c153,160
+< 	pool_init(&fs->lfs_bpppool, maxbpp * sizeof(struct buf *), 0, 0, 0,
+< 		"lfsbpppl", &pool_allocator_nointr, IPL_NONE);
+---
+> 
+> 	// XXX ROB: shouldn't be M_SEGMENT
+> 	// XXX ROB: need to do some sort of synchronization around all this?
+> 	//malloc(maxbpp * sizeof(struct buf *), M_SEGMENT, M_WAITOK)
+> 	// XXX ROB: this panics?
+> 	//pool_init(&fs->lfs_bpppool, maxbpp * sizeof(struct buf *), 0, 0, 0,
+> 	//	"lfsbpppl", &pool_allocator_nointr, IPL_NONE);
+> 	maxbpp_g = maxbpp;
+160c168,169
+< 	pool_destroy(&fs->lfs_bpppool);
+---
+> 	// XXX ROB
+> 	//pool_destroy(&fs->lfs_bpppool);
+327c336,338
+< 	sp->bpp = pool_get(&fs->lfs_bpppool, PR_WAITOK);
+---
+> 	// XXX ROB
+> 	sp->bpp = malloc(maxbpp_g * sizeof(struct buf *), M_SEGMENT, M_WAITOK);
+> 	//pool_get(&fs->lfs_bpppool, PR_WAITOK);
+459c470,472
+< 		pool_put(&fs->lfs_bpppool, sp->bpp);
+---
+> 		// XXX ROB
+> 		free(sp->bpp, M_SEGMENT);
+> 		//pool_put(&fs->lfs_bpppool, sp->bpp);
+Index: sys/ufs/lfs/lfs_syscalls.c
+===================================================================
+RCS file: /cvsroot/src/sys/ufs/lfs/lfs_syscalls.c,v
+retrieving revision 1.172
+diff -r1.172 lfs_syscalls.c
+919a920,923
+> 	 // XXX ROB this is sleeping forever....
+> 	if (tv->tv_sec == 0 && tv->tv_usec == 0) {
+> 	    panic("timeout 0\n");
+> 	}
+Index: sys/ufs/lfs/ulfs_bmap.c
+===================================================================
+RCS file: /cvsroot/src/sys/ufs/lfs/ulfs_bmap.c,v
+retrieving revision 1.7
+diff -r1.7 ulfs_bmap.c
+288a289
+> 	printf("strat8\n");
+Index: sys/uvm/uvm.h
+===================================================================
+RCS file: /cvsroot/src/sys/uvm/uvm.h,v
+retrieving revision 1.66
+diff -r1.66 uvm.h
+64a65,66
+> 
+> 
+Index: sys/uvm/uvm_page.h
+===================================================================
+RCS file: /cvsroot/src/sys/uvm/uvm_page.h,v
+retrieving revision 1.80
+diff -r1.80 uvm_page.h
+71a72,73
+> #define UVM_PAGE_TRKOWN 1
+> 

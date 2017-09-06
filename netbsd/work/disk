@@ -1,0 +1,23 @@
+# /dev/rwd0d:
+type: ESDI
+disk: ST4000DM000-1F21
+label: fictitious
+flags:
+bytes/sector: 512
+sectors/track: 63
+tracks/cylinder: 16
+sectors/cylinder: 1008
+cylinders: 7752021
+total sectors: 4294967295
+rpm: 3600
+interleave: 1
+trackskew: 0
+cylinderskew: 0
+headswitch: 0		# microseconds
+track-to-track seek: 0	# microseconds
+drivedata: 0 
+
+4 partitions:
+#        size    offset     fstype [fsize bsize cpg/sgs]
+a: 134217728         33554432     4.2BSD      4096     4096     0
+d: 4294967295         0     4.2BSD      0     0     # (Cyl.      0 - 4294967295*)

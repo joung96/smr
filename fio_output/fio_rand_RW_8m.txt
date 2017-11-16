@@ -1,0 +1,40 @@
+fio: this platform does not support process shared mutexes, forcing use of threads. Use the 'thread' option to get rid of this warning.
+file1: (g=0): rw=randrw, bs=(R) 8192KiB-8192KiB, (W) 8192KiB-8192KiB, (T) 8192KiB-8192KiB, ioengine=sync, iodepth=16
+fio-3.2-2-g3b973
+Starting 1 thread
+
+file1: (groupid=0, jobs=1): err= 0: pid=3: Wed Nov 15 18:05:21 2017
+   read: IOPS=7, BW=57.9MiB/s (60.7MB/s)(50.9GiB/900036msec)
+    clat (msec): min=4, max=447, avg=121.19, stdev=72.50
+     lat (msec): min=4, max=447, avg=121.19, stdev=72.50
+    clat percentiles (msec):
+     |  1.00th=[    5],  5.00th=[    5], 10.00th=[    8], 20.00th=[   63],
+     | 30.00th=[  117], 40.00th=[  121], 50.00th=[  123], 60.00th=[  129],
+     | 70.00th=[  140], 80.00th=[  163], 90.00th=[  205], 95.00th=[  249],
+     | 99.00th=[  334], 99.50th=[  355], 99.90th=[  384], 99.95th=[  414],
+     | 99.99th=[  447]
+   bw (  KiB/s): min=12583, max=211301, per=100.00%, avg=59299.15, stdev=23800.23, samples=1800
+   iops        : min=    1, max=   25, avg= 6.88, stdev= 2.93, samples=1800
+  write: IOPS=4, BW=39.0MiB/s (40.9MB/s)(34.3GiB/900036msec)
+    clat (msec): min=7, max=455, avg=24.48, stdev=25.08
+     lat (msec): min=7, max=456, avg=25.09, stdev=25.07
+    clat percentiles (msec):
+     |  1.00th=[    8],  5.00th=[    9], 10.00th=[   10], 20.00th=[   11],
+     | 30.00th=[   11], 40.00th=[   12], 50.00th=[   13], 60.00th=[   21],
+     | 70.00th=[   30], 80.00th=[   38], 90.00th=[   50], 95.00th=[   65],
+     | 99.00th=[  111], 99.50th=[  144], 99.90th=[  284], 99.95th=[  342],
+     | 99.99th=[  456]
+   bw (  KiB/s): min=15784, max=164168, per=100.00%, avg=44205.37, stdev=26280.54, samples=1627
+   iops        : min=    1, max=   20, avg= 5.04, stdev= 3.24, samples=1627
+  lat (msec)   : 10=18.65%, 20=16.62%, 50=12.79%, 100=4.74%, 250=44.19%
+  lat (msec)   : 500=3.01%
+  cpu          : usr=0.36%, sys=25.19%, ctx=2735536, majf=0, minf=8
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwt: total=6513,4393,0, short=0,0,0, dropped=0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=16
+
+Run status group 0 (all jobs):
+   READ: bw=57.9MiB/s (60.7MB/s), 57.9MiB/s-57.9MiB/s (60.7MB/s-60.7MB/s), io=50.9GiB (54.6GB), run=900036-900036msec
+  WRITE: bw=39.0MiB/s (40.9MB/s), 39.0MiB/s-39.0MiB/s (40.9MB/s-40.9MB/s), io=34.3GiB (36.9GB), run=900036-900036msec

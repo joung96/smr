@@ -8,13 +8,13 @@ write_bw_log=logs/random-read
 write_lat_log=logs/random-read
 write_iops_log=logs/random-read
 thread
-ioengine=posixaio
+ioengine=sync
 randrepeat=1
 direct=1
 ; gtod_reduce=1
 name=test
 filename=test
-bs=4k
+bs=256k
 iodepth=1
 ; readwrite=randrw
 ; rwmixread=75

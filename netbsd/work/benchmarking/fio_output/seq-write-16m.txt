@@ -1,0 +1,26 @@
+test: (g=0): rw=write, bs=(R) 16.0MiB-16.0MiB, (W) 16.0MiB-16.0MiB, (T) 16.0MiB-16.0MiB, ioengine=sync, iodepth=1
+fio-3.2-2-g3b973
+Starting 1 thread
+
+test: (groupid=0, jobs=1): err= 0: pid=3: Tue Nov 28 20:26:18 2017
+  write: IOPS=7, BW=122MiB/s (128MB/s)(4096MiB/33525msec)
+    clat (msec): min=127, max=164, avg=129.85, stdev= 5.08
+     lat (msec): min=128, max=165, avg=130.94, stdev= 5.07
+    clat percentiles (msec):
+     |  1.00th=[  128],  5.00th=[  128], 10.00th=[  128], 20.00th=[  128],
+     | 30.00th=[  128], 40.00th=[  128], 50.00th=[  128], 60.00th=[  128],
+     | 70.00th=[  128], 80.00th=[  133], 90.00th=[  133], 95.00th=[  142],
+     | 99.00th=[  148], 99.50th=[  157], 99.90th=[  165], 99.95th=[  165],
+     | 99.99th=[  165]
+   bw (  KiB/s): min=112439, max=129774, per=98.55%, avg=123293.52, stdev=8036.39, samples=33
+   iops        : min=    6, max=    7, avg= 6.64, stdev= 0.49, samples=33
+  lat (msec)   : 250=100.00%
+  cpu          : usr=0.75%, sys=14.64%, ctx=67393, majf=0, minf=1048589
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwt: total=0,256,0, short=0,0,0, dropped=0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=122MiB/s (128MB/s), 122MiB/s-122MiB/s (128MB/s-128MB/s), io=4096MiB (4295MB), run=33525-33525msec

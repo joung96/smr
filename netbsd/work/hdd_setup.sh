@@ -9,6 +9,7 @@ fi
 sudo umount /mnt/test 2> /dev/null
 
 if [ "$1" == "hdd" ]
+then
     rdev="/dev/wd0a"
     dev="/dev/dk0"
     flags=""
@@ -42,5 +43,5 @@ if [ $# -eq 5 ]
 then
     #sudo ./fb -f filebench/"$5".f
     #sudo fio --thread --ioengine=posixaio
-    sudo fio fio_workloads/"$5".fio
+    sudo fio --runtime=300 fio_workloads/"$5".fio
 fi

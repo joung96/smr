@@ -29,7 +29,7 @@ then
 
     # -n, don't start the cleaner, since we want to use /usr/src3/libexec
     sudo pkill -9 lfs_cleanerd
-    sudo /usr/src3/sbin/mount_lfs/obj/mount_lfs -n $dev /mnt/test
+    sudo mount_lfs -n $dev /mnt/test
     #sudo /usr/src3/libexec/lfs_cleanerd/obj/lfs_cleanerd /mnt/test
 else
     #sudo /usr/src3/sbin/newfs/obj/newfs -O2 -f4K -b4K -S4096 -s15269888 $rdev

@@ -25,7 +25,7 @@ fi
 if [ "$2" == "lfs" ]
 then
     # sector 4k?
-    sudo /usr/src3/sbin/newfs_lfs/obj/newfs_lfs -B256M -f4K -b4K -w32  -F $flags $rdev
+    sudo newfs_lfs -B256M -f4K -b4K -w32  -F $flags $rdev
 
     # -n, don't start the cleaner, since we want to use /usr/src3/libexec
     sudo pkill -9 lfs_cleanerd

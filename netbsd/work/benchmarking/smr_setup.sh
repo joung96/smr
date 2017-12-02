@@ -61,5 +61,5 @@ if [ $# -eq 5 ]
 then
     #sudo ./fb -f filebench/"$5".f
     #sudo fio --thread --ioengine=posixaio
-    sudo fio fio_workloads/"$5".fio
+    sudo fio --runtime=300 fio_workloads/"$5".fio
 fi
